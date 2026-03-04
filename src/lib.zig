@@ -213,6 +213,70 @@ test "end-to-end: mixed LTR + RTL" {
     try std.testing.expectEqual(@as(u21, 'D'), vis.visual[7]);
 }
 
+test "end-to-end: LTR with trailing digits after RTL word" {
+    const gpa = std.testing.allocator;
+    var dir: ParDirection = .auto_ltr;
+    // "hello, مرحبا 123"
+    const input = [_]u21{
+        'h',    'e',    'l',    'l',    'o',    ',', ' ',
+        0x0645, 0x0631, 0x062D, 0x0628, 0x0627, ' ', '1',
+        '2',    '3',
+    };
+
+    var emb = try getParEmbeddingLevels(gpa, &input, &dir);
+    defer emb.deinit();
+
+    try std.testing.expectEqual(ParDirection.ltr, emb.resolved_par_dir);
+
+    var vis = try reorderLine(gpa, &input, emb.levels, dir.toLevel());
+    defer vis.deinit();
+
+    // Visual order should place digits to the left of the RTL word in an LTR paragraph.
+    // Expected: "hello, 123 ابحرم"
+    const expected = [_]u21{
+        'h',    'e',    'l', 'l', 'o',    ',',    ' ',
+        '1',    '2',    '3', ' ', 0x0627, 0x0628, 0x062D,
+        0x0631, 0x0645,
+    };
+    try std.testing.expectEqualSlices(u21, &expected, vis.visual);
+}
+
+test "end-to-end: RTL letter space digits reorder visually" {
+    const gpa = std.testing.allocator;
+    var dir: ParDirection = .auto_ltr;
+    // ['م', ' ', '5', '3'] should display as ['5', '3', ' ', 'م'].
+    const input = [_]u21{ 0x0645, ' ', '5', '3' };
+
+    var emb = try getParEmbeddingLevels(gpa, &input, &dir);
+    defer emb.deinit();
+
+    try std.testing.expectEqual(ParDirection.rtl, emb.resolved_par_dir);
+
+    var vis = try reorderLine(gpa, &input, emb.levels, dir.toLevel());
+    defer vis.deinit();
+
+    const expected = [_]u21{ '5', '3', ' ', 0x0645 };
+    try std.testing.expectEqualSlices(u21, &expected, vis.visual);
+}
+
+test "end-to-end: RTL letters around digits keep number run order" {
+    const gpa = std.testing.allocator;
+    var dir: ParDirection = .auto_ltr;
+    // ['م', ' ', '5', '3', ' ', 'م']
+    const input = [_]u21{ 0x0645, ' ', '5', '3', ' ', 0x0645 };
+
+    var emb = try getParEmbeddingLevels(gpa, &input, &dir);
+    defer emb.deinit();
+
+    try std.testing.expectEqual(ParDirection.rtl, emb.resolved_par_dir);
+
+    var vis = try reorderLine(gpa, &input, emb.levels, dir.toLevel());
+    defer vis.deinit();
+
+    const expected = [_]u21{ 0x0645, ' ', '5', '3', ' ', 0x0645 };
+    try std.testing.expectEqualSlices(u21, &expected, vis.visual);
+}
+
 test "removeBidiMarks" {
     const gpa = std.testing.allocator;
     const input = [_]u21{ 'A', 0x200E, 'B', 0x202A, 'C' };

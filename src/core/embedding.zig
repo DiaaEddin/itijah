@@ -1253,7 +1253,6 @@ fn resolveBracketsAndNeutrals(
         // N0b: strong type inside pair matching the embedding level.
         var run_idx = pair.open_run_idx;
         while (run_idx < pair.close_run_idx) : (run_idx += 1) {
-            if (runs[run_idx].isolate_level != pair_iso_level) continue;
             const strong_t = typeAnEnAsRtl(runs[run_idx].class);
             if (!isStrongForN0(strong_t)) continue;
 
@@ -1271,7 +1270,6 @@ fn resolveBracketsAndNeutrals(
             var back_run_idx = pair.open_run_idx;
             while (back_run_idx > 0) {
                 back_run_idx -= 1;
-                if (runs[back_run_idx].isolate_level != pair_iso_level) continue;
                 const strong_t = typeAnEnAsRtl(runs[back_run_idx].class);
                 if (!isStrongForN0(strong_t)) continue;
 
@@ -1281,7 +1279,6 @@ fn resolveBracketsAndNeutrals(
 
             run_idx = pair.open_run_idx;
             while (run_idx < pair.close_run_idx) : (run_idx += 1) {
-                if (runs[run_idx].isolate_level != pair_iso_level) continue;
                 const strong_t = typeAnEnAsRtl(runs[run_idx].class);
                 if (!isStrongForN0(strong_t)) continue;
 

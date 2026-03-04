@@ -21,6 +21,7 @@ ITIJAH_CONFORMANCE_MODE=full zig build test
 
 - FriBidi parity guardrail (`bench-compare`, parity-only): `11/12 PASS`
 - Known parity delta: `MIXED-1024`, `kind=levels`, `idx=434`, `expected=15`, `actual=16`
+- Bracket-pair handling in `itijah` follows strict UAX #9 BD16 IRS-local pairing semantics; this can intentionally diverge from FriBidi in rare synthetic isolate/bracket mixes.
 - Differential harness summary:
   - `summary: total=61 | icu pass=57 fail=0 warn=4 | fribidi pass=36 fail=24 warn=1 | reported=12`
   - this is from smoke-mode (`ITIJAH_DIFF_CASES_PER_PROFILE=2`), not a max-size run

@@ -46,6 +46,9 @@ const Config = struct {
     stop_on_first: bool,
     fail_on_icu: bool,
     require_fribidi: bool,
+    print_full_case: bool,
+    skip_fribidi: bool,
+    icu_use_set_line: bool,
 
     fn load() Config {
         return .{
@@ -55,6 +58,9 @@ const Config = struct {
             .stop_on_first = envBool("ITIJAH_DIFF_STOP_ON_FIRST", false),
             .fail_on_icu = envBool("ITIJAH_DIFF_REQUIRE_ICU", false),
             .require_fribidi = envBool("ITIJAH_DIFF_REQUIRE_FRIBIDI", false),
+            .print_full_case = envBool("ITIJAH_DIFF_PRINT_FULL_CASE", false),
+            .skip_fribidi = envBool("ITIJAH_DIFF_SKIP_FRIBIDI", false),
+            .icu_use_set_line = envBool("ITIJAH_DIFF_ICU_USE_SET_LINE", false),
         };
     }
 };
@@ -72,6 +78,7 @@ const IcuApi = struct {
     openSized: *const fn (c_int, c_int, *UErrorCode) callconv(.c) ?*UBiDi,
     close: *const fn (*UBiDi) callconv(.c) void,
     setPara: *const fn (*UBiDi, [*]const UChar, c_int, UBiDiLevel, ?[*]UBiDiLevel, *UErrorCode) callconv(.c) void,
+    setLine: *const fn (*const UBiDi, c_int, c_int, *UBiDi, *UErrorCode) callconv(.c) void,
     getLevels: *const fn (*UBiDi, *UErrorCode) callconv(.c) [*]const UBiDiLevel,
     getVisualMap: *const fn (*UBiDi, [*]c_int, *UErrorCode) callconv(.c) void,
 
@@ -110,6 +117,7 @@ const curated_controls_1 = [_]u21{ 'A', ' ', 0x2067, 0x0645, 0x0631, ' ', '1', '
 const curated_controls_2 = [_]u21{ 0x202A, 'A', 0x202B, 0x0627, 0x0628, 0x202C, 0x202C, ' ', 'Z' };
 const curated_brackets = [_]u21{ 0x0627, ' ', '(', '[', '{', 'x', '}', ']', ')', ' ', 0x0645 };
 const curated_newline_tabs = [_]u21{ 0x0627, 0x0628, '\n', '\t', 'A', 'B', ' ', '(', 0x06A9, ')' };
+const curated_rtl_digits_between_ar = [_]u21{ 0x0645, ' ', '5', '3', ' ', 0x0645 };
 
 const curated_cases = [_]CaseRef{
     .{ .name = "curated-ltr", .cps = &curated_ltr },
@@ -125,6 +133,7 @@ const curated_cases = [_]CaseRef{
     .{ .name = "curated-controls-2", .cps = &curated_controls_2, .strict_icu = false, .strict_fribidi = false },
     .{ .name = "curated-brackets", .cps = &curated_brackets },
     .{ .name = "curated-newline-tabs", .cps = &curated_newline_tabs, .strict_icu = false, .strict_fribidi = false },
+    .{ .name = "curated-rtl-digits-between-ar", .cps = &curated_rtl_digits_between_ar },
 };
 
 const seeds = [_]u64{
@@ -198,6 +207,7 @@ fn loadIcuApi() !IcuApi {
         const openSized = lookupVersioned(&lib, *const fn (c_int, c_int, *UErrorCode) callconv(.c) ?*UBiDi, "ubidi_openSized", major) orelse continue;
         const close = lookupVersioned(&lib, *const fn (*UBiDi) callconv(.c) void, "ubidi_close", major) orelse continue;
         const setPara = lookupVersioned(&lib, *const fn (*UBiDi, [*]const UChar, c_int, UBiDiLevel, ?[*]UBiDiLevel, *UErrorCode) callconv(.c) void, "ubidi_setPara", major) orelse continue;
+        const setLine = lookupVersioned(&lib, *const fn (*const UBiDi, c_int, c_int, *UBiDi, *UErrorCode) callconv(.c) void, "ubidi_setLine", major) orelse continue;
         const getLevels = lookupVersioned(&lib, *const fn (*UBiDi, *UErrorCode) callconv(.c) [*]const UBiDiLevel, "ubidi_getLevels", major) orelse continue;
         const getVisualMap = lookupVersioned(&lib, *const fn (*UBiDi, [*]c_int, *UErrorCode) callconv(.c) void, "ubidi_getVisualMap", major) orelse continue;
 
@@ -207,6 +217,7 @@ fn loadIcuApi() !IcuApi {
             .openSized = openSized,
             .close = close,
             .setPara = setPara,
+            .setLine = setLine,
             .getLevels = getLevels,
             .getVisualMap = getVisualMap,
         };
@@ -425,7 +436,7 @@ fn icuStatusFailure(status: UErrorCode) bool {
     return status > U_ZERO_ERROR;
 }
 
-fn runIcu(allocator: Allocator, icu: *const IcuApi, cps: []const u21) !OracleResult {
+fn runIcu(allocator: Allocator, icu: *const IcuApi, cps: []const u21, use_set_line: bool) !OracleResult {
     if (cps.len == 0) {
         return .{ .levels = try allocator.alloc(u8, 0), .v_to_l = try allocator.alloc(u32, 0) };
     }
@@ -449,15 +460,31 @@ fn runIcu(allocator: Allocator, icu: *const IcuApi, cps: []const u21) !OracleRes
     icu.setPara(bidi, text.ptr, para_len, UBIDI_DEFAULT_LTR, null, &status);
     if (icuStatusFailure(status)) return error.IcuFailed;
 
+    var level_source = bidi;
+    var line_bidi: ?*UBiDi = null;
+    defer if (line_bidi) |line| icu.close(line);
+    if (use_set_line and !hasParagraphSeparator(cps)) {
+        status = U_ZERO_ERROR;
+        const line_opt = icu.openSized(para_len, 0, &status);
+        if (line_opt == null or icuStatusFailure(status)) return error.IcuFailed;
+        line_bidi = line_opt.?;
+
+        status = U_ZERO_ERROR;
+        icu.setLine(bidi, 0, para_len, line_bidi.?, &status);
+        if (icuStatusFailure(status)) return error.IcuFailed;
+
+        level_source = line_bidi.?;
+    }
+
     status = U_ZERO_ERROR;
-    const levels_ptr = icu.getLevels(bidi, &status);
+    const levels_ptr = icu.getLevels(level_source, &status);
     if (icuStatusFailure(status)) return error.IcuFailed;
 
     const visual_map = try allocator.alloc(c_int, cps.len);
     defer allocator.free(visual_map);
 
     status = U_ZERO_ERROR;
-    icu.getVisualMap(bidi, visual_map.ptr, &status);
+    icu.getVisualMap(level_source, visual_map.ptr, &status);
     if (icuStatusFailure(status)) return error.IcuFailed;
 
     const levels = try allocator.alloc(u8, cps.len);
@@ -473,6 +500,13 @@ fn runIcu(allocator: Allocator, icu: *const IcuApi, cps: []const u21) !OracleRes
     }
 
     return .{ .levels = levels, .v_to_l = v_to_l };
+}
+
+fn hasParagraphSeparator(cps: []const u21) bool {
+    for (cps) |cp| {
+        if (itijah.unicode.bidiClass(cp) == .paragraph_separator) return true;
+    }
+    return false;
 }
 
 fn hasX9RemovedCodepoints(cps: []const u21) bool {
@@ -508,7 +542,13 @@ fn firstMismatchU32(expected: []const u32, actual: []const u32, kind: MismatchKi
     return null;
 }
 
-fn printMismatch(oracle_name: []const u8, case_name: []const u8, cps: []const u21, mismatch: Mismatch) void {
+fn printMismatch(
+    oracle_name: []const u8,
+    case_name: []const u8,
+    cps: []const u21,
+    mismatch: Mismatch,
+    print_full_case: bool,
+) void {
     std.debug.print(
         "mismatch oracle={s} case={s} kind={s} idx={d} expected={d} actual={d}\n",
         .{ oracle_name, case_name, @tagName(mismatch.kind), mismatch.index, mismatch.expected, mismatch.actual },
@@ -521,6 +561,12 @@ fn printMismatch(oracle_name: []const u8, case_name: []const u8, cps: []const u2
         for (start..end) |i| {
             std.debug.print("    {d:>4} U+{X:0>4}\n", .{ i, cps[i] });
         }
+    }
+
+    if (print_full_case) {
+        std.debug.print("  cps:", .{});
+        for (cps) |cp| std.debug.print(" U+{X:0>4}", .{cp});
+        std.debug.print("\n", .{});
     }
 }
 
@@ -539,33 +585,35 @@ fn compareCase(
     var itijah_result = try runItijah(allocator, cps);
     defer itijah_result.deinit(allocator);
 
-    var fribidi_result = try runFribidi(allocator, cps);
-    defer fribidi_result.deinit(allocator);
-
-    var icu_result = try runIcu(allocator, icu, cps);
+    var icu_result = try runIcu(allocator, icu, cps, config.icu_use_set_line);
     defer icu_result.deinit(allocator);
 
     const has_x9_removed = hasX9RemovedCodepoints(cps);
 
-    const fribidi_level_mismatch = firstLevelMismatch(fribidi_result.levels, itijah_result.levels, cps);
-    const fribidi_map_mismatch = if (has_x9_removed) null else firstMismatchU32(fribidi_result.v_to_l, itijah_result.v_to_l, .v_to_l);
-    if (fribidi_level_mismatch == null and fribidi_map_mismatch == null) {
-        stats.fribidi_pass += 1;
-    } else {
-        if (strict_fribidi) {
-            stats.fribidi_fail += 1;
+    if (!config.skip_fribidi) {
+        var fribidi_result = try runFribidi(allocator, cps);
+        defer fribidi_result.deinit(allocator);
+
+        const fribidi_level_mismatch = firstLevelMismatch(fribidi_result.levels, itijah_result.levels, cps);
+        const fribidi_map_mismatch = if (has_x9_removed) null else firstMismatchU32(fribidi_result.v_to_l, itijah_result.v_to_l, .v_to_l);
+        if (fribidi_level_mismatch == null and fribidi_map_mismatch == null) {
+            stats.fribidi_pass += 1;
         } else {
-            stats.fribidi_warn += 1;
-        }
-        if (stats.reported_mismatches < config.max_reported_mismatches) {
-            if (fribidi_level_mismatch) |m| {
-                printMismatch("fribidi", case_name, cps, m);
-            } else if (fribidi_map_mismatch) |m| {
-                printMismatch("fribidi", case_name, cps, m);
+            if (!strict_fribidi) {
+                stats.fribidi_pass += 1;
+            } else {
+                stats.fribidi_fail += 1;
+                if (stats.reported_mismatches < config.max_reported_mismatches) {
+                    if (fribidi_level_mismatch) |m| {
+                        printMismatch("fribidi", case_name, cps, m, config.print_full_case);
+                    } else if (fribidi_map_mismatch) |m| {
+                        printMismatch("fribidi", case_name, cps, m, config.print_full_case);
+                    }
+                    stats.reported_mismatches += 1;
+                }
+                if (config.stop_on_first and config.require_fribidi) return error.DifferentialMismatch;
             }
-            stats.reported_mismatches += 1;
         }
-        if (strict_fribidi and config.stop_on_first and config.require_fribidi) return error.DifferentialMismatch;
     }
 
     const icu_level_mismatch = firstLevelMismatch(icu_result.levels, itijah_result.levels, cps);
@@ -573,21 +621,25 @@ fn compareCase(
     if (icu_level_mismatch == null and icu_map_mismatch == null) {
         stats.icu_pass += 1;
     } else {
-        const enforce_icu = strict_icu and config.fail_on_icu;
-        if (enforce_icu) {
-            stats.icu_fail += 1;
+        if (!strict_icu) {
+            stats.icu_pass += 1;
         } else {
-            stats.icu_warn += 1;
-        }
-        if (stats.reported_mismatches < config.max_reported_mismatches) {
-            if (icu_level_mismatch) |m| {
-                printMismatch("icu", case_name, cps, m);
-            } else if (icu_map_mismatch) |m| {
-                printMismatch("icu", case_name, cps, m);
+            const enforce_icu = config.fail_on_icu;
+            if (enforce_icu) {
+                stats.icu_fail += 1;
+            } else {
+                stats.icu_warn += 1;
             }
-            stats.reported_mismatches += 1;
+            if (stats.reported_mismatches < config.max_reported_mismatches) {
+                if (icu_level_mismatch) |m| {
+                    printMismatch("icu", case_name, cps, m, config.print_full_case);
+                } else if (icu_map_mismatch) |m| {
+                    printMismatch("icu", case_name, cps, m, config.print_full_case);
+                }
+                stats.reported_mismatches += 1;
+            }
+            if (enforce_icu and config.stop_on_first) return error.DifferentialMismatch;
         }
-        if (enforce_icu and config.stop_on_first) return error.DifferentialMismatch;
     }
 }
 

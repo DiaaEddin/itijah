@@ -190,6 +190,13 @@ const UBiDiLevel = u8;
 const UErrorCode = c_int;
 const U_ZERO_ERROR: UErrorCode = 0;
 const UBIDI_DEFAULT_LTR: UBiDiLevel = 0xFE;
+const huge_lengths = [_]usize{ 262_144, 524_288, 1_048_576 };
+
+const CorpusKind = enum {
+    ltr,
+    rtl,
+    mixed,
+};
 
 const IcuApi = struct {
     lib: std.DynLib,
@@ -205,7 +212,55 @@ const IcuApi = struct {
     }
 };
 
-const max_bench_case_len = 20_000;
+const FribidiBuffers = struct {
+    chars: []c.FriBidiChar = &.{},
+    types: []c.FriBidiCharType = &.{},
+    brackets: []c.FriBidiBracketType = &.{},
+    levels: []c.FriBidiLevel = &.{},
+    visual: []c.FriBidiChar = &.{},
+    map: []c.FriBidiStrIndex = &.{},
+
+    fn init(allocator: Allocator, len: usize) !FribidiBuffers {
+        var buffers: FribidiBuffers = .{};
+        buffers.chars = try allocator.alloc(c.FriBidiChar, len);
+        errdefer allocator.free(buffers.chars);
+        buffers.types = try allocator.alloc(c.FriBidiCharType, len);
+        errdefer allocator.free(buffers.types);
+        buffers.brackets = try allocator.alloc(c.FriBidiBracketType, len);
+        errdefer allocator.free(buffers.brackets);
+        buffers.levels = try allocator.alloc(c.FriBidiLevel, len);
+        errdefer allocator.free(buffers.levels);
+        buffers.visual = try allocator.alloc(c.FriBidiChar, len);
+        errdefer allocator.free(buffers.visual);
+        buffers.map = try allocator.alloc(c.FriBidiStrIndex, len);
+        return buffers;
+    }
+
+    fn deinit(self: *FribidiBuffers, allocator: Allocator) void {
+        allocator.free(self.map);
+        allocator.free(self.visual);
+        allocator.free(self.levels);
+        allocator.free(self.brackets);
+        allocator.free(self.types);
+        allocator.free(self.chars);
+        self.* = .{};
+    }
+};
+
+const IcuBuffers = struct {
+    map: []c_int = &.{},
+
+    fn init(allocator: Allocator, len: usize) !IcuBuffers {
+        return .{
+            .map = try allocator.alloc(c_int, len),
+        };
+    }
+
+    fn deinit(self: *IcuBuffers, allocator: Allocator) void {
+        allocator.free(self.map);
+        self.* = .{};
+    }
+};
 
 fn generateLtrCorpus(comptime n: usize) [n]u21 {
     @setEvalBranchQuota(500_000);
@@ -246,30 +301,62 @@ fn generateMixedCorpus(comptime n: usize) [n]u21 {
     return buf;
 }
 
+fn corpusKindName(kind: CorpusKind) []const u8 {
+    return switch (kind) {
+        .ltr => "LTR",
+        .rtl => "RTL",
+        .mixed => "MIXED",
+    };
+}
+
+fn generateCorpusOwned(allocator: Allocator, kind: CorpusKind, n: usize) ![]u21 {
+    const cps = try allocator.alloc(u21, n);
+    for (0..n) |i| {
+        cps[i] = switch (kind) {
+            .ltr => @intCast('A' + (i % 26)),
+            .rtl => @intCast(0x05D0 + (i % 27)),
+            .mixed => blk: {
+                if (i % 4 == 0) break :blk @as(u21, @intCast(0x05D0 + (i % 27)));
+                if (i % 5 == 0) break :blk @as(u21, @intCast('0' + (i % 10)));
+                if (i % 7 == 0) break :blk '(';
+                if (i % 9 == 0) break :blk ')';
+                if (i % 11 == 0) break :blk 0x2067;
+                if (i % 13 == 0) break :blk 0x2069;
+                if (i % 17 == 0) break :blk ' ';
+                break :blk @as(u21, @intCast('a' + (i % 26)));
+            },
+        };
+    }
+    return cps;
+}
+
 const ltr_16 = generateLtrCorpus(16);
 const ltr_64 = generateLtrCorpus(64);
 const ltr_256 = generateLtrCorpus(256);
+const ltr_512 = generateLtrCorpus(512);
 const ltr_1024 = generateLtrCorpus(1024);
 const rtl_16 = generateRtlCorpus(16);
 const rtl_64 = generateRtlCorpus(64);
 const rtl_256 = generateRtlCorpus(256);
+const rtl_512 = generateRtlCorpus(512);
 const rtl_1024 = generateRtlCorpus(1024);
 const mixed_16 = generateMixedCorpus(16);
 const mixed_64 = generateMixedCorpus(64);
 const mixed_256 = generateMixedCorpus(256);
+const mixed_512 = generateMixedCorpus(512);
 const mixed_1024 = generateMixedCorpus(1024);
 const ltr_2048 = generateLtrCorpus(2048);
 const ltr_4096 = generateLtrCorpus(4096);
-const ltr_10000 = generateLtrCorpus(10_000);
-const ltr_20000 = generateLtrCorpus(20_000);
+const ltr_8192 = generateLtrCorpus(8192);
+const ltr_16384 = generateLtrCorpus(16_384);
 const rtl_2048 = generateRtlCorpus(2048);
 const rtl_4096 = generateRtlCorpus(4096);
-const rtl_10000 = generateRtlCorpus(10_000);
-const rtl_20000 = generateRtlCorpus(20_000);
+const rtl_8192 = generateRtlCorpus(8192);
+const rtl_16384 = generateRtlCorpus(16_384);
 const mixed_2048 = generateMixedCorpus(2048);
 const mixed_4096 = generateMixedCorpus(4096);
-const mixed_10000 = generateMixedCorpus(10_000);
-const mixed_20000 = generateMixedCorpus(20_000);
+const mixed_8192 = generateMixedCorpus(8192);
+const mixed_16384 = generateMixedCorpus(16_384);
 
 const parity_cases = [_]Case{
     .{ .name = "LTR-16", .cps = &ltr_16 },
@@ -290,29 +377,32 @@ const bench_cases = [_]Case{
     .{ .name = "LTR-16", .cps = &ltr_16 },
     .{ .name = "LTR-64", .cps = &ltr_64 },
     .{ .name = "LTR-256", .cps = &ltr_256 },
+    .{ .name = "LTR-512", .cps = &ltr_512 },
     .{ .name = "LTR-1024", .cps = &ltr_1024 },
     .{ .name = "LTR-2048", .cps = &ltr_2048 },
     .{ .name = "LTR-4096", .cps = &ltr_4096 },
-    .{ .name = "LTR-10000", .cps = &ltr_10000 },
-    .{ .name = "LTR-20000", .cps = &ltr_20000 },
+    .{ .name = "LTR-8192", .cps = &ltr_8192 },
+    .{ .name = "LTR-16384", .cps = &ltr_16384 },
 
     .{ .name = "RTL-16", .cps = &rtl_16 },
     .{ .name = "RTL-64", .cps = &rtl_64 },
     .{ .name = "RTL-256", .cps = &rtl_256 },
+    .{ .name = "RTL-512", .cps = &rtl_512 },
     .{ .name = "RTL-1024", .cps = &rtl_1024 },
     .{ .name = "RTL-2048", .cps = &rtl_2048 },
     .{ .name = "RTL-4096", .cps = &rtl_4096 },
-    .{ .name = "RTL-10000", .cps = &rtl_10000 },
-    .{ .name = "RTL-20000", .cps = &rtl_20000 },
+    .{ .name = "RTL-8192", .cps = &rtl_8192 },
+    .{ .name = "RTL-16384", .cps = &rtl_16384 },
 
     .{ .name = "MIXED-16", .cps = &mixed_16 },
     .{ .name = "MIXED-64", .cps = &mixed_64 },
     .{ .name = "MIXED-256", .cps = &mixed_256 },
+    .{ .name = "MIXED-512", .cps = &mixed_512 },
     .{ .name = "MIXED-1024", .cps = &mixed_1024 },
     .{ .name = "MIXED-2048", .cps = &mixed_2048 },
     .{ .name = "MIXED-4096", .cps = &mixed_4096 },
-    .{ .name = "MIXED-10000", .cps = &mixed_10000 },
-    .{ .name = "MIXED-20000", .cps = &mixed_20000 },
+    .{ .name = "MIXED-8192", .cps = &mixed_8192 },
+    .{ .name = "MIXED-16384", .cps = &mixed_16384 },
 };
 
 fn encodeUtf16(allocator: Allocator, cps: []const u21) ![]u16 {
@@ -336,22 +426,32 @@ fn iterationsForLen(len: usize) usize {
     if (len <= 16) return 60_000;
     if (len <= 64) return 40_000;
     if (len <= 256) return 12_000;
+    if (len <= 512) return 6_000;
     if (len <= 1024) return 3_000;
     if (len <= 2048) return 1_500;
     if (len <= 4096) return 800;
-    if (len <= 10_000) return 250;
-    if (len <= 20_000) return 120;
-    return 60;
+    if (len <= 8_192) return 250;
+    if (len <= 16_384) return 120;
+    if (len <= 32_768) return 60;
+    if (len <= 65_536) return 30;
+    if (len <= 131_072) return 15;
+    if (len <= 262_144) return 8;
+    if (len <= 524_288) return 4;
+    if (len <= 1_048_576) return 2;
+    return 1;
 }
 
 fn warmupForLen(len: usize) usize {
     if (len <= 64) return 100;
     if (len <= 256) return 60;
+    if (len <= 512) return 40;
     if (len <= 1024) return 30;
     if (len <= 4096) return 15;
-    if (len <= 10_000) return 8;
-    if (len <= 20_000) return 5;
-    return 3;
+    if (len <= 8_192) return 8;
+    if (len <= 16_384) return 5;
+    if (len <= 32_768) return 3;
+    if (len <= 65_536) return 2;
+    return 1;
 }
 
 fn lookupVersioned(lib: *std.DynLib, comptime T: type, base: []const u8, major: u8) ?T {
@@ -434,47 +534,47 @@ fn runItijahScratch(
     }
 }
 
-fn runFribidi(op: Op, cps: []const u21) !void {
-    if (cps.len > max_bench_case_len) return error.InputTooLong;
+fn runFribidi(op: Op, cps: []const u21, buffers: *FribidiBuffers) !void {
+    if (cps.len > buffers.chars.len) return error.InputTooLong;
 
     const len: c.FriBidiStrIndex = @intCast(cps.len);
-    var chars: [max_bench_case_len]c.FriBidiChar = undefined;
-    var types: [max_bench_case_len]c.FriBidiCharType = undefined;
-    var brackets: [max_bench_case_len]c.FriBidiBracketType = undefined;
-    var levels: [max_bench_case_len]c.FriBidiLevel = undefined;
-    var visual: [max_bench_case_len]c.FriBidiChar = undefined;
-    var map: [max_bench_case_len]c.FriBidiStrIndex = undefined;
+    const chars = buffers.chars[0..cps.len];
+    const types = buffers.types[0..cps.len];
+    const brackets = buffers.brackets[0..cps.len];
+    const levels = buffers.levels[0..cps.len];
+    const visual = buffers.visual[0..cps.len];
+    const map = buffers.map[0..cps.len];
 
     for (cps, 0..) |cp, i| {
         chars[i] = @intCast(cp);
         map[i] = @intCast(i);
     }
 
-    c.fribidi_get_bidi_types(&chars, len, &types);
-    c.fribidi_get_bracket_types(&chars, len, &types, &brackets);
+    c.fribidi_get_bidi_types(chars.ptr, len, types.ptr);
+    c.fribidi_get_bracket_types(chars.ptr, len, types.ptr, brackets.ptr);
 
     var par_dir: c.FriBidiParType = c.FRIBIDI_PAR_ON;
-    const max_level = c.fribidi_get_par_embedding_levels_ex(&types, &brackets, len, &par_dir, &levels);
+    const max_level = c.fribidi_get_par_embedding_levels_ex(types.ptr, brackets.ptr, len, &par_dir, levels.ptr);
     if (max_level == 0) return error.FribidiFailed;
 
     if (op == .reorder_line) {
         for (cps, 0..) |cp, i| visual[i] = @intCast(cp);
         const reordered_level = c.fribidi_reorder_line(
             c.FRIBIDI_FLAGS_DEFAULT,
-            &types,
+            types.ptr,
             len,
             0,
             par_dir,
-            &levels,
-            &visual,
-            &map,
+            levels.ptr,
+            visual.ptr,
+            map.ptr,
         );
         if (reordered_level == 0) return error.FribidiFailed;
     }
 }
 
-fn runIcu(icu: *const IcuApi, op: Op, utf16: []const u16) !void {
-    if (utf16.len > max_bench_case_len) return error.InputTooLong;
+fn runIcu(icu: *const IcuApi, op: Op, utf16: []const u16, buffers: *IcuBuffers) !void {
+    if (utf16.len > buffers.map.len) return error.InputTooLong;
 
     var status: UErrorCode = U_ZERO_ERROR;
     const bidi = icu.openSized(@intCast(utf16.len), 0, &status) orelse return error.IcuFailed;
@@ -490,9 +590,9 @@ fn runIcu(icu: *const IcuApi, op: Op, utf16: []const u16) !void {
     if (status != U_ZERO_ERROR) return error.IcuFailed;
 
     if (op == .reorder_line) {
-        var map: [max_bench_case_len]c_int = undefined;
+        const map = buffers.map[0..utf16.len];
         status = U_ZERO_ERROR;
-        icu.getVisualMap(bidi, &map, &status);
+        icu.getVisualMap(bidi, map.ptr, &status);
         if (status != U_ZERO_ERROR) return error.IcuFailed;
     }
 }
@@ -619,6 +719,15 @@ fn itijahScratchMode() bool {
     return std.mem.eql(u8, flag, "1") or std.ascii.eqlIgnoreCase(flag, "true");
 }
 
+fn includeHugeMode() bool {
+    const flag = std.process.getEnvVarOwned(std.heap.page_allocator, "ITIJAH_COMPARE_INCLUDE_HUGE") catch |err| switch (err) {
+        error.EnvironmentVariableNotFound => return false,
+        else => return false,
+    };
+    defer std.heap.page_allocator.free(flag);
+    return std.mem.eql(u8, flag, "1") or std.ascii.eqlIgnoreCase(flag, "true");
+}
+
 fn printCaseCps(writer: *std.Io.Writer, cps: []const u21) !void {
     for (cps, 0..) |cp, i| {
         try writer.print("{X:0>4}", .{cp});
@@ -650,7 +759,15 @@ fn printLevelMismatchContext(
     }
 }
 
-fn measureOne(impl: Impl, op: Op, cps: []const u21, utf16: []const u16, icu: *const IcuApi) !Metrics {
+fn measureOne(
+    impl: Impl,
+    op: Op,
+    cps: []const u21,
+    utf16: []const u16,
+    icu: *const IcuApi,
+    fribidi_buffers: ?*FribidiBuffers,
+    icu_buffers: ?*IcuBuffers,
+) !Metrics {
     switch (impl) {
         .itijah => {
             var m = MeasuringAllocator.init(std.heap.c_allocator);
@@ -677,8 +794,8 @@ fn measureOne(impl: Impl, op: Op, cps: []const u21, utf16: []const u16, icu: *co
 
             var timer = try std.time.Timer.start();
             switch (impl) {
-                .fribidi => try runFribidi(op, cps),
-                .icu => try runIcu(icu, op, utf16),
+                .fribidi => try runFribidi(op, cps, fribidi_buffers orelse return error.MissingBenchBuffers),
+                .icu => try runIcu(icu, op, utf16, icu_buffers orelse return error.MissingBenchBuffers),
                 .itijah => unreachable,
             }
             const ns = timer.read();
@@ -745,15 +862,43 @@ fn bench(
         return benchItijahScratch(writer, case, op);
     }
 
+    var fribidi_buffers: ?FribidiBuffers = null;
+    defer if (fribidi_buffers) |*buf| buf.deinit(std.heap.page_allocator);
+    if (impl == .fribidi) {
+        fribidi_buffers = try FribidiBuffers.init(std.heap.page_allocator, case.cps.len);
+    }
+
+    var icu_buffers: ?IcuBuffers = null;
+    defer if (icu_buffers) |*buf| buf.deinit(std.heap.page_allocator);
+    if (impl == .icu) {
+        icu_buffers = try IcuBuffers.init(std.heap.page_allocator, utf16.len);
+    }
+
     const warmup = warmupForLen(case.cps.len);
     for (0..warmup) |_| {
-        _ = try measureOne(impl, op, case.cps, utf16, icu);
+        _ = try measureOne(
+            impl,
+            op,
+            case.cps,
+            utf16,
+            icu,
+            if (fribidi_buffers) |*buf| buf else null,
+            if (icu_buffers) |*buf| buf else null,
+        );
     }
 
     const iterations = iterationsForLen(case.cps.len);
     var agg = Aggregate{};
     for (0..iterations) |_| {
-        const m = try measureOne(impl, op, case.cps, utf16, icu);
+        const m = try measureOne(
+            impl,
+            op,
+            case.cps,
+            utf16,
+            icu,
+            if (fribidi_buffers) |*buf| buf else null,
+            if (icu_buffers) |*buf| buf else null,
+        );
         agg.add(m);
     }
 
@@ -776,6 +921,25 @@ fn bench(
     );
 }
 
+fn runBenchCase(
+    writer: *std.Io.Writer,
+    allocator: Allocator,
+    case: Case,
+    icu: *const IcuApi,
+    itijah_reuse: bool,
+) !void {
+    const utf16 = try encodeUtf16(allocator, case.cps);
+    defer allocator.free(utf16);
+
+    try bench(writer, case, .itijah, .analysis, utf16, icu, itijah_reuse);
+    try bench(writer, case, .fribidi, .analysis, utf16, icu, itijah_reuse);
+    try bench(writer, case, .icu, .analysis, utf16, icu, itijah_reuse);
+
+    try bench(writer, case, .itijah, .reorder_line, utf16, icu, itijah_reuse);
+    try bench(writer, case, .fribidi, .reorder_line, utf16, icu, itijah_reuse);
+    try bench(writer, case, .icu, .reorder_line, utf16, icu, itijah_reuse);
+}
+
 pub fn main() !void {
     if (itijah_fribidi_probe_available() == 0) {
         return error.MemoryProbeUnavailable;
@@ -784,9 +948,7 @@ pub fn main() !void {
     var icu = try loadIcuApi();
     defer icu.deinit();
 
-    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-    defer arena.deinit();
-    const alloc = arena.allocator();
+    const alloc = std.heap.c_allocator;
 
     var buf: [16384]u8 = undefined;
     var stdout = std.fs.File.stdout().writer(&buf);
@@ -823,19 +985,34 @@ pub fn main() !void {
     if (itijah_reuse) {
         try writer.writeAll("mode: itijah scratch reuse enabled (ITIJAH_COMPARE_ITIJAH_REUSE=1)\n");
     }
+    const include_huge = includeHugeMode();
+    if (include_huge) {
+        try writer.writeAll("mode: huge corpus set enabled (ITIJAH_COMPARE_INCLUDE_HUGE=1)\n");
+    }
 
     try writer.writeAll("columns: case op impl iterations mean_ns ns_per_cp alloc_count allocated_bytes peak_bytes\n");
     try writer.writeAll("-----------------------------------------------------------------------------------------------\n");
 
     for (bench_cases) |case| {
-        const utf16 = try encodeUtf16(alloc, case.cps);
-        try bench(writer, case, .itijah, .analysis, utf16, &icu, itijah_reuse);
-        try bench(writer, case, .fribidi, .analysis, utf16, &icu, itijah_reuse);
-        try bench(writer, case, .icu, .analysis, utf16, &icu, itijah_reuse);
+        try runBenchCase(writer, alloc, case, &icu, itijah_reuse);
+    }
 
-        try bench(writer, case, .itijah, .reorder_line, utf16, &icu, itijah_reuse);
-        try bench(writer, case, .fribidi, .reorder_line, utf16, &icu, itijah_reuse);
-        try bench(writer, case, .icu, .reorder_line, utf16, &icu, itijah_reuse);
+    if (include_huge) {
+        const kinds = [_]CorpusKind{ .ltr, .rtl, .mixed };
+        for (huge_lengths) |len| {
+            for (kinds) |kind| {
+                const cps = try generateCorpusOwned(alloc, kind, len);
+                defer alloc.free(cps);
+
+                var name_buf: [32]u8 = undefined;
+                const name = try std.fmt.bufPrint(&name_buf, "{s}-{d}", .{ corpusKindName(kind), len });
+                const case = Case{
+                    .name = name,
+                    .cps = cps,
+                };
+                try runBenchCase(writer, alloc, case, &icu, itijah_reuse);
+            }
+        }
     }
 
     try writer.flush();
