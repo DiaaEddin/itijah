@@ -14,7 +14,7 @@ Codepoint-based API inspired by FriBidi's design, implemented idiomatically in Z
 | X1-X8 | Explicit embeddings, overrides, isolates | Done |
 | X9 | Remove explicit codes (marked BN) | Done |
 | W1-W7 | Weak type resolution | Done |
-| N0 | Bracket pair resolution | Done (per-IRS pairing per UAX #9 BD16) |
+| N0 | Bracket pair resolution | Done (BD16 pairing scoped per IRS) |
 | N1-N2 | Neutral type resolution | Done |
 | I1-I2 | Implicit level resolution | Done |
 | L1 | Reset segment/paragraph separators | Done (parts 1-3) |
@@ -51,13 +51,14 @@ Codepoint-based API inspired by FriBidi's design, implemented idiomatically in Z
 
 ## N0 Overflow Behavior Note
 
-`itijah` follows UAX #9 BD16 with per-IRS bracket pairing and overflow semantics.
+`itijah` follows UAX #9 BD16 with IRS-scoped bracket pairing.
 
-- Bracket pairing is collected independently per Isolating Run Sequence (IRS), so pairs cannot bleed across disjoint IRS segments at the same isolate depth.
-- On BD16 stack overflow, only the current IRS pairing is discarded, matching UAX #9 intent.
+- Pair candidates are collected and paired independently for each Isolating Run Sequence (IRS).
+- Pairing state does not carry across disjoint IRS segments, even if they share the same `isolate_level` value.
+- If the BD16 bracket stack overflows while processing one IRS, pairing for that IRS is discarded; other IRS are unaffected.
 - This behavior is validated by dedicated regression tests and full Unicode conformance.
 
-FriBidi parity can differ on rare synthetic isolate/bracket mixes because this implementation now prioritizes strict UAX #9 IRS-local pairing semantics.
+FriBidi parity can differ on rare synthetic isolate/bracket mixes because this implementation uses strict BD16 IRS-local pairing semantics.
 
 This is covered by dedicated regression tests plus full Unicode conformance runs.
 
@@ -203,7 +204,7 @@ and prints:
 
 `bench-compare` corpora include:
 - LTR/RTL/MIXED at lengths:
-  - `16`, `64`, `256`, `1024`, `2048`, `4096`, `10000`, `20000`
+  - `16`, `64`, `256`, `512`, `1024`, `2048`, `4096`, `8192`, `16384`
 
 Useful compare modes:
 
@@ -213,6 +214,9 @@ ITIJAH_COMPARE_ONLY_PARITY=1 zig build bench-compare
 
 # run compare with itijah scratch reuse mode enabled
 ITIJAH_COMPARE_ITIJAH_REUSE=1 zig build bench-compare
+
+# opt-in huge compare set (adds 262144, 524288, 1048576 per corpus profile)
+ITIJAH_COMPARE_INCLUDE_HUGE=1 zig build bench-compare
 ```
 
 Interpretation notes:
