@@ -251,35 +251,6 @@ Full conformance: `BidiTest failed=0`, `BidiCharacterTest failed=0`.
 
 See [docs/compatibility.md](docs/compatibility.md) for parity status and differential harness details.
 
-## Project Structure
-
-```
-src/
-  lib.zig              — Public API
-  core/
-    level.zig          — BidiLevel type, helpers
-    types.zig          — ParDirection, flags, result types
-    embedding.zig      — Rules P2-P3, X1-X8, W1-W7, N0-N2, I1-I2
-    reorder.zig        — Rules L1, L2
-  data/
-    unicode.zig        — uucode wrappers for bidi class, brackets, joining type
-    mirroring.zig      — BidiMirroring.txt pairs, binary search
-  shaping/
-    joining.zig        — Arabic joining (Phase 2 stub)
-    shaping.zig        — Arabic shaping + mirroring application (Phase 2 stub)
-  test/
-    conformance.zig    — BidiTest.txt / BidiCharacterTest.txt harness
-    parity.zig         — External parity workflow placeholder (no hard dependency)
-    invariants.zig     — Property/fuzz tests
-    diff_oracle.zig    — Differential harness vs FriBidi + ICU (deterministic corpus)
-bench/
-  bench.zig            — itijah benchmark harness with timing+memory KPIs
-  compare.zig          — itijah vs fribidi vs ICU comparison harness
-docs/
-  benchmarks.md        — benchmark commands, environment, KPI tables
-  compatibility.md     — parity/diff/conformance compatibility snapshot
-```
-
 ## License
 
 MIT
