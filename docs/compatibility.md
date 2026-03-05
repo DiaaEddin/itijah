@@ -1,6 +1,6 @@
 # Compatibility
 
-Last updated: 2026-03-03.
+Last updated: 2026-03-05.
 
 ## Reference Engines
 
@@ -23,14 +23,14 @@ ITIJAH_CONFORMANCE_MODE=full zig build test
 - Known parity delta: `MIXED-1024`, `kind=levels`, `idx=434`, `expected=15`, `actual=16`
 - Bracket-pair handling in `itijah` follows strict UAX #9 BD16 IRS-local pairing semantics; this can intentionally diverge from FriBidi in rare synthetic isolate/bracket mixes.
 - Differential harness summary:
-  - `summary: total=61 | icu pass=57 fail=0 warn=4 | fribidi pass=36 fail=24 warn=1 | reported=12`
+  - `summary: total=62 | icu pass=60 fail=0 warn=2 | fribidi pass=38 fail=24 warn=0 | reported=12`
   - this is from smoke-mode (`ITIJAH_DIFF_CASES_PER_PROFILE=2`), not a max-size run
 - `bench-compare` parity and `test-diff` totals are not directly comparable:
   - parity uses a fixed 12-case benchmark corpus
   - differential runs curated + generated cases and tracks pass/fail/warn per oracle
 - Full Unicode conformance:
-  - `BidiTest (full): failed=0`
-  - `BidiCharacterTest (full): failed=0`
+  - `BidiTest (full): total=490846 executed=765579 passed=765579 failed=0`
+  - `BidiCharacterTest (full): total=91707 executed=91707 passed=91707 failed=0`
 
 ## Interpretation
 
