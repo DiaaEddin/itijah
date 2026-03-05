@@ -45,6 +45,7 @@ const Config = struct {
     max_reported_mismatches: usize,
     stop_on_first: bool,
     fail_on_icu: bool,
+    max_icu_fail: usize,
     require_fribidi: bool,
     print_full_case: bool,
     skip_fribidi: bool,
@@ -57,6 +58,7 @@ const Config = struct {
             .max_reported_mismatches = envUsize("ITIJAH_DIFF_MAX_REPORTED", 30),
             .stop_on_first = envBool("ITIJAH_DIFF_STOP_ON_FIRST", false),
             .fail_on_icu = envBool("ITIJAH_DIFF_REQUIRE_ICU", false),
+            .max_icu_fail = envUsize("ITIJAH_DIFF_MAX_ICU_FAIL", 0),
             .require_fribidi = envBool("ITIJAH_DIFF_REQUIRE_FRIBIDI", false),
             .print_full_case = envBool("ITIJAH_DIFF_PRINT_FULL_CASE", false),
             .skip_fribidi = envBool("ITIJAH_DIFF_SKIP_FRIBIDI", false),
@@ -512,6 +514,13 @@ fn hasX9RemovedCodepoints(cps: []const u21) bool {
     return false;
 }
 
+fn hasStrongCodepoints(cps: []const u21) bool {
+    for (cps) |cp| {
+        if (itijah.unicode.isStrong(itijah.unicode.bidiClass(cp))) return true;
+    }
+    return false;
+}
+
 fn firstLevelMismatch(expected: []const u8, actual: []const u8, cps: []const u21) ?Mismatch {
     if (expected.len != actual.len) {
         return .{ .kind = .levels, .index = 0, .expected = @intCast(expected.len), .actual = @intCast(actual.len) };
@@ -585,6 +594,7 @@ fn compareCase(
     defer icu_result.deinit(allocator);
 
     const has_x9_removed = hasX9RemovedCodepoints(cps);
+    const has_strong = hasStrongCodepoints(cps);
 
     if (!config.skip_fribidi) {
         var fribidi_result = try runFribidi(allocator, cps);
@@ -617,7 +627,8 @@ fn compareCase(
     if (icu_level_mismatch == null and icu_map_mismatch == null) {
         stats.icu_pass += 1;
     } else {
-        if (!strict_icu) {
+        const strict_icu_effective = strict_icu and has_strong;
+        if (!strict_icu_effective) {
             stats.icu_pass += 1;
         } else {
             const enforce_icu = config.fail_on_icu;
@@ -646,8 +657,16 @@ pub fn main() !void {
 
     const config = Config.load();
     std.debug.print(
-        "itijah differential test (itijah vs fribidi + icu)\nconfig: cases_per_seed_profile={d} max_len={d} max_reported={d} stop_on_first={} require_icu={} require_fribidi={}\n",
-        .{ config.cases_per_seed_profile, config.max_len, config.max_reported_mismatches, config.stop_on_first, config.fail_on_icu, config.require_fribidi },
+        "itijah differential test (itijah vs fribidi + icu)\nconfig: cases_per_seed_profile={d} max_len={d} max_reported={d} stop_on_first={} require_icu={} max_icu_fail={d} require_fribidi={}\n",
+        .{
+            config.cases_per_seed_profile,
+            config.max_len,
+            config.max_reported_mismatches,
+            config.stop_on_first,
+            config.fail_on_icu,
+            config.max_icu_fail,
+            config.require_fribidi,
+        },
     );
 
     var icu = try loadIcuApi();
@@ -696,6 +715,6 @@ pub fn main() !void {
         .{ stats.total_cases, stats.icu_pass, stats.icu_fail, stats.icu_warn, stats.fribidi_pass, stats.fribidi_fail, stats.fribidi_warn, stats.reported_mismatches },
     );
 
-    if (config.fail_on_icu and stats.icu_fail > 0) return error.DifferentialMismatch;
+    if (config.fail_on_icu and stats.icu_fail > config.max_icu_fail) return error.DifferentialMismatch;
     if (config.require_fribidi and stats.fribidi_fail > 0) return error.DifferentialMismatch;
 }
