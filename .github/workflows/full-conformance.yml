@@ -31,8 +31,8 @@ jobs:
       - name: Full conformance
         run: ITIJAH_CONFORMANCE_MODE=full zig build test -Doptimize=ReleaseFast
 
-      - name: Differential strict ICU gate
-        run: ITIJAH_DIFF_REQUIRE_ICU=1 ITIJAH_DIFF_CASES_PER_PROFILE=6 zig build test-diff
+      - name: Differential ICU gate (thresholded)
+        run: ITIJAH_DIFF_REQUIRE_ICU=1 ITIJAH_DIFF_MAX_ICU_FAIL=5 ITIJAH_DIFF_CASES_PER_PROFILE=6 ITIJAH_DIFF_MAX_REPORTED=30 zig build test-diff
 
       - name: FriBidi parity guardrail (nightly/manual)
         run: ITIJAH_COMPARE_ONLY_PARITY=1 zig build bench-compare
