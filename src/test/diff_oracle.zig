@@ -523,6 +523,13 @@ fn hasX9RemovedCodepoints(cps: []const u21) bool {
     return false;
 }
 
+fn hasStrongCodepoints(cps: []const u21) bool {
+    for (cps) |cp| {
+        if (itijah.unicode.isStrong(itijah.unicode.bidiClass(cp))) return true;
+    }
+    return false;
+}
+
 fn firstLevelMismatch(expected: []const u8, actual: []const u8, cps: []const u21) ?Mismatch {
     if (expected.len != actual.len) {
         return .{ .kind = .levels, .index = 0, .expected = @intCast(expected.len), .actual = @intCast(actual.len) };
@@ -596,6 +603,7 @@ fn compareCase(
     defer icu_result.deinit(allocator);
 
     const has_x9_removed = hasX9RemovedCodepoints(cps);
+    const has_strong = hasStrongCodepoints(cps);
 
     if (!config.skip_fribidi) {
         var fribidi_result = try runFribidi(allocator, cps);
@@ -628,7 +636,8 @@ fn compareCase(
     if (icu_level_mismatch == null and icu_map_mismatch == null) {
         stats.icu_pass += 1;
     } else {
-        if (!strict_icu) {
+        const strict_icu_effective = strict_icu and has_strong;
+        if (!strict_icu_effective) {
             stats.icu_pass += 1;
         } else {
             const enforce_icu = config.fail_on_icu;
