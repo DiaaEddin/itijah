@@ -17,8 +17,6 @@ const Allocator = std.mem.Allocator;
 const Op = enum {
     analysis,
     reorder_line,
-    resolve_visual_layout,
-    resolve_visual_layout_scratch,
 };
 
 const Impl = enum {
@@ -165,12 +163,10 @@ const MeasuringAllocator = struct {
 const ItijahScratchContext = struct {
     embedding: itijah.EmbeddingScratch = .{},
     reorder: itijah.ReorderScratch = .{},
-    layout: itijah.VisualLayoutScratch = .{},
 
     fn deinit(self: *ItijahScratchContext, allocator: Allocator) void {
         self.embedding.deinit(allocator);
         self.reorder.deinit(allocator);
-        self.layout.deinit(allocator);
     }
 };
 
@@ -199,33 +195,6 @@ const UErrorCode = c_int;
 const U_ZERO_ERROR: UErrorCode = 0;
 const UBIDI_DEFAULT_LTR: UBiDiLevel = 0xFE;
 const huge_lengths = [_]usize{ 262_144, 524_288, 1_048_576 };
-const zabadi_udhr_paths = [_][]const u8{
-    "../zabadi/benches/udhr/ltr/udhr_acu_1.txt",
-    "../zabadi/benches/udhr/ltr/udhr_auc.txt",
-    "../zabadi/benches/udhr/ltr/udhr_eng.txt",
-    "../zabadi/benches/udhr/ltr/udhr_knc.txt",
-    "../zabadi/benches/udhr/ltr/udhr_krl.txt",
-    "../zabadi/benches/udhr/ltr/udhr_lot.txt",
-    "../zabadi/benches/udhr/ltr/udhr_mly_latn.txt",
-    "../zabadi/benches/udhr/ltr/udhr_piu.txt",
-    "../zabadi/benches/udhr/ltr/udhr_qug.txt",
-    "../zabadi/benches/udhr/ltr/udhr_snn.txt",
-    "../zabadi/benches/udhr/ltr/udhr_tiv.txt",
-    "../zabadi/benches/udhr/ltr/udhr_uig_latn.txt",
-    "../zabadi/benches/udhr/bdi/udhr_aii.txt",
-    "../zabadi/benches/udhr/bdi/udhr_arb.txt",
-    "../zabadi/benches/udhr/bdi/udhr_mly_arab.txt",
-    "../zabadi/benches/udhr/bdi/udhr_pes_1.txt",
-    "../zabadi/benches/udhr/bdi/udhr_skr.txt",
-    "../zabadi/benches/udhr/bdi/udhr_urd.txt",
-    "../zabadi/benches/udhr/bdi/udhr_pes_2.txt",
-    "../zabadi/benches/udhr/bdi/udhr_uig_arab.txt",
-    "../zabadi/benches/udhr/bdi/udhr_urd_2.txt",
-    "../zabadi/benches/udhr/bdi/udhr_heb.txt",
-    "../zabadi/benches/udhr/bdi/udhr_pnb.txt",
-    "../zabadi/benches/udhr/bdi/udhr_ydd.txt",
-};
-
 const CorpusKind = enum {
     ltr,
     rtl,
@@ -413,30 +382,18 @@ const bench_cases = [_]Case{
     .{ .name = "LTR-256", .cps = &ltr_256 },
     .{ .name = "LTR-512", .cps = &ltr_512 },
     .{ .name = "LTR-1024", .cps = &ltr_1024 },
-    .{ .name = "LTR-2048", .cps = &ltr_2048 },
-    .{ .name = "LTR-4096", .cps = &ltr_4096 },
-    .{ .name = "LTR-8192", .cps = &ltr_8192 },
-    .{ .name = "LTR-16384", .cps = &ltr_16384 },
 
     .{ .name = "RTL-16", .cps = &rtl_16 },
     .{ .name = "RTL-64", .cps = &rtl_64 },
     .{ .name = "RTL-256", .cps = &rtl_256 },
     .{ .name = "RTL-512", .cps = &rtl_512 },
     .{ .name = "RTL-1024", .cps = &rtl_1024 },
-    .{ .name = "RTL-2048", .cps = &rtl_2048 },
-    .{ .name = "RTL-4096", .cps = &rtl_4096 },
-    .{ .name = "RTL-8192", .cps = &rtl_8192 },
-    .{ .name = "RTL-16384", .cps = &rtl_16384 },
 
     .{ .name = "MIXED-16", .cps = &mixed_16 },
     .{ .name = "MIXED-64", .cps = &mixed_64 },
     .{ .name = "MIXED-256", .cps = &mixed_256 },
     .{ .name = "MIXED-512", .cps = &mixed_512 },
     .{ .name = "MIXED-1024", .cps = &mixed_1024 },
-    .{ .name = "MIXED-2048", .cps = &mixed_2048 },
-    .{ .name = "MIXED-4096", .cps = &mixed_4096 },
-    .{ .name = "MIXED-8192", .cps = &mixed_8192 },
-    .{ .name = "MIXED-16384", .cps = &mixed_16384 },
 };
 
 fn encodeUtf16(allocator: Allocator, cps: []const u21) ![]u16 {
@@ -464,19 +421,6 @@ fn encodeUtf8(allocator: Allocator, cps: []const u21) ![]u8 {
     for (cps) |cp| {
         const len = try std.unicode.utf8Encode(cp, &scratch);
         try out.appendSlice(allocator, scratch[0..len]);
-    }
-
-    return try out.toOwnedSlice(allocator);
-}
-
-fn decodeUtf8ToCodepoints(allocator: Allocator, utf8: []const u8) ![]u21 {
-    var out = std.ArrayListUnmanaged(u21){};
-    errdefer out.deinit(allocator);
-
-    var view = try std.unicode.Utf8View.init(utf8);
-    var iter = view.iterator();
-    while (iter.nextCodepoint()) |cp| {
-        try out.append(allocator, cp);
     }
 
     return try out.toOwnedSlice(allocator);
@@ -578,10 +522,6 @@ fn runItijah(allocator: Allocator, op: Op, cps: []const u21) !void {
             const visual = try itijah.reorderVisualOnly(allocator, cps, emb.levels, dir.toLevel());
             allocator.free(visual);
         },
-        .resolve_visual_layout, .resolve_visual_layout_scratch => {
-            var layout = try itijah.resolveVisualLayout(allocator, cps, .{ .base_dir = .ltr });
-            layout.deinit();
-        },
     }
 }
 
@@ -592,33 +532,20 @@ fn runItijahScratch(
     cps: []const u21,
 ) !void {
     switch (op) {
-        .analysis, .reorder_line => {
+        .analysis => {
             var dir: itijah.ParDirection = .auto_ltr;
-            var emb = try itijah.getParEmbeddingLevelsScratch(allocator, &ctx.embedding, cps, &dir);
-            defer emb.deinit();
-
-            if (op == .reorder_line) {
-                const visual = try itijah.reorderVisualOnlyScratch(allocator, &ctx.reorder, cps, emb.levels, dir.toLevel());
-                allocator.free(visual);
-            }
+            _ = try itijah.getParEmbeddingLevelsScratchView(allocator, &ctx.embedding, cps, &dir);
         },
-        .resolve_visual_layout => {
-            var layout = try itijah.resolveVisualLayout(allocator, cps, .{ .base_dir = .ltr });
-            layout.deinit();
-        },
-        .resolve_visual_layout_scratch => {
-            _ = try itijah.resolveVisualLayoutScratch(allocator, &ctx.layout, cps, .{ .base_dir = .ltr });
+        .reorder_line => {
+            var dir: itijah.ParDirection = .auto_ltr;
+            const emb = try itijah.getParEmbeddingLevelsScratchView(allocator, &ctx.embedding, cps, &dir);
+            _ = try itijah.reorderVisualOnlyScratch(allocator, &ctx.reorder, cps, emb.levels, dir.toLevel());
         },
     }
 }
 
 fn runZabadi(allocator: Allocator, op: Op, utf8: []const u8) !void {
     if (!have_zabadi) return error.ZabadiUnavailable;
-
-    switch (op) {
-        .analysis, .reorder_line => {},
-        .resolve_visual_layout, .resolve_visual_layout_scratch => return error.UnsupportedOperationForImpl,
-    }
 
     var info = try zbd.BidiInfo.new(
         allocator,
@@ -837,26 +764,8 @@ fn parityOnlyMode() bool {
     return std.mem.eql(u8, flag, "1") or std.ascii.eqlIgnoreCase(flag, "true");
 }
 
-fn itijahScratchMode() bool {
-    const flag = std.process.getEnvVarOwned(std.heap.page_allocator, "ITIJAH_COMPARE_ITIJAH_REUSE") catch |err| switch (err) {
-        error.EnvironmentVariableNotFound => return false,
-        else => return false,
-    };
-    defer std.heap.page_allocator.free(flag);
-    return std.mem.eql(u8, flag, "1") or std.ascii.eqlIgnoreCase(flag, "true");
-}
-
 fn includeHugeMode() bool {
     const flag = std.process.getEnvVarOwned(std.heap.page_allocator, "ITIJAH_COMPARE_INCLUDE_HUGE") catch |err| switch (err) {
-        error.EnvironmentVariableNotFound => return false,
-        else => return false,
-    };
-    defer std.heap.page_allocator.free(flag);
-    return std.mem.eql(u8, flag, "1") or std.ascii.eqlIgnoreCase(flag, "true");
-}
-
-fn includeNaturalMode() bool {
-    const flag = std.process.getEnvVarOwned(std.heap.page_allocator, "ITIJAH_COMPARE_INCLUDE_NATURAL") catch |err| switch (err) {
         error.EnvironmentVariableNotFound => return false,
         else => return false,
     };
@@ -1010,9 +919,8 @@ fn bench(
     utf8: []const u8,
     utf16: []const u16,
     icu: *const IcuApi,
-    itijah_reuse: bool,
 ) !void {
-    if (impl == .itijah and itijah_reuse) {
+    if (impl == .itijah) {
         return benchItijahScratch(writer, case, op);
     }
 
@@ -1082,7 +990,6 @@ fn runBenchCase(
     allocator: Allocator,
     case: Case,
     icu: *const IcuApi,
-    itijah_reuse: bool,
 ) !void {
     const utf8 = if (have_zabadi) try encodeUtf8(allocator, case.cps) else &[_]u8{};
     defer if (have_zabadi) allocator.free(utf8);
@@ -1090,47 +997,19 @@ fn runBenchCase(
     const utf16 = try encodeUtf16(allocator, case.cps);
     defer allocator.free(utf16);
 
-    try bench(writer, case, .itijah, .analysis, utf8, utf16, icu, itijah_reuse);
+    try bench(writer, case, .itijah, .analysis, utf8, utf16, icu);
     if (have_zabadi) {
-        try bench(writer, case, .zabadi, .analysis, utf8, utf16, icu, itijah_reuse);
+        try bench(writer, case, .zabadi, .analysis, utf8, utf16, icu);
     }
-    try bench(writer, case, .fribidi, .analysis, utf8, utf16, icu, itijah_reuse);
-    try bench(writer, case, .icu, .analysis, utf8, utf16, icu, itijah_reuse);
+    try bench(writer, case, .fribidi, .analysis, utf8, utf16, icu);
+    try bench(writer, case, .icu, .analysis, utf8, utf16, icu);
 
-    try bench(writer, case, .itijah, .reorder_line, utf8, utf16, icu, itijah_reuse);
+    try bench(writer, case, .itijah, .reorder_line, utf8, utf16, icu);
     if (have_zabadi) {
-        try bench(writer, case, .zabadi, .reorder_line, utf8, utf16, icu, itijah_reuse);
+        try bench(writer, case, .zabadi, .reorder_line, utf8, utf16, icu);
     }
-    try bench(writer, case, .fribidi, .reorder_line, utf8, utf16, icu, itijah_reuse);
-    try bench(writer, case, .icu, .reorder_line, utf8, utf16, icu, itijah_reuse);
-
-    // Terminal-focused API paths.
-    try bench(writer, case, .itijah, .resolve_visual_layout, utf8, utf16, icu, false);
-    try bench(writer, case, .itijah, .resolve_visual_layout_scratch, utf8, utf16, icu, true);
-}
-
-fn runNaturalBenchCase(
-    writer: *std.Io.Writer,
-    allocator: Allocator,
-    path: []const u8,
-    icu: *const IcuApi,
-    itijah_reuse: bool,
-) !void {
-    const utf8 = try std.fs.cwd().readFileAlloc(allocator, path, 8 * 1024 * 1024);
-    defer allocator.free(utf8);
-
-    const cps = try decodeUtf8ToCodepoints(allocator, utf8);
-    defer allocator.free(cps);
-
-    const basename = std.fs.path.basename(path);
-    var name_buf: [96]u8 = undefined;
-    const case_name = try std.fmt.bufPrint(&name_buf, "UDHR-{s}", .{basename});
-
-    const case = Case{
-        .name = case_name,
-        .cps = cps,
-    };
-    try runBenchCase(writer, allocator, case, icu, itijah_reuse);
+    try bench(writer, case, .fribidi, .reorder_line, utf8, utf16, icu);
+    try bench(writer, case, .icu, .reorder_line, utf8, utf16, icu);
 }
 
 pub fn main() !void {
@@ -1142,7 +1021,6 @@ pub fn main() !void {
     defer icu.deinit();
 
     const alloc = std.heap.c_allocator;
-
     var buf: [16384]u8 = undefined;
     var stdout = std.fs.File.stdout().writer(&buf);
     const writer = &stdout.interface;
@@ -1179,24 +1057,17 @@ pub fn main() !void {
         return;
     }
 
-    const itijah_reuse = itijahScratchMode();
-    if (itijah_reuse) {
-        try writer.writeAll("mode: itijah scratch reuse enabled (ITIJAH_COMPARE_ITIJAH_REUSE=1)\n");
-    }
+    try writer.writeAll("mode: itijah scratch-only paths enabled\n");
     const include_huge = includeHugeMode();
     if (include_huge) {
         try writer.writeAll("mode: huge corpus set enabled (ITIJAH_COMPARE_INCLUDE_HUGE=1)\n");
-    }
-    const include_natural = includeNaturalMode();
-    if (include_natural) {
-        try writer.writeAll("mode: natural UDHR corpus set enabled (ITIJAH_COMPARE_INCLUDE_NATURAL=1)\n");
     }
 
     try writer.writeAll("columns: case op impl iterations mean_ns ns_per_cp alloc_count allocated_bytes peak_bytes\n");
     try writer.writeAll("-----------------------------------------------------------------------------------------------\n");
 
     for (bench_cases) |case| {
-        try runBenchCase(writer, alloc, case, &icu, itijah_reuse);
+        try runBenchCase(writer, alloc, case, &icu);
     }
 
     if (include_huge) {
@@ -1212,18 +1083,8 @@ pub fn main() !void {
                     .name = name,
                     .cps = cps,
                 };
-                try runBenchCase(writer, alloc, case, &icu, itijah_reuse);
+                try runBenchCase(writer, alloc, case, &icu);
             }
-        }
-    }
-
-    if (include_natural) {
-        if (std.fs.cwd().access("../zabadi/benches/udhr", .{})) |_| {
-            for (zabadi_udhr_paths) |path| {
-                try runNaturalBenchCase(writer, alloc, path, &icu, itijah_reuse);
-            }
-        } else |_| {
-            try writer.writeAll("note: ../zabadi/benches/udhr not found; skipping natural corpus set\n");
         }
     }
 

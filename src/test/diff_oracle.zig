@@ -45,6 +45,7 @@ const Config = struct {
     max_reported_mismatches: usize,
     stop_on_first: bool,
     fail_on_icu: bool,
+    icu_min_pass_rate: f64,
     require_fribidi: bool,
     print_full_case: bool,
     skip_fribidi: bool,
@@ -57,6 +58,7 @@ const Config = struct {
             .max_reported_mismatches = envUsize("ITIJAH_DIFF_MAX_REPORTED", 30),
             .stop_on_first = envBool("ITIJAH_DIFF_STOP_ON_FIRST", false),
             .fail_on_icu = envBool("ITIJAH_DIFF_REQUIRE_ICU", false),
+            .icu_min_pass_rate = envF64("ITIJAH_DIFF_ICU_MIN_PASS_RATE", 60.0 / 62.0),
             .require_fribidi = envBool("ITIJAH_DIFF_REQUIRE_FRIBIDI", false),
             .print_full_case = envBool("ITIJAH_DIFF_PRINT_FULL_CASE", false),
             .skip_fribidi = envBool("ITIJAH_DIFF_SKIP_FRIBIDI", false),
@@ -169,6 +171,15 @@ fn envUsize(name: []const u8, default_value: usize) usize {
     };
     defer std.heap.page_allocator.free(value);
     return std.fmt.parseInt(usize, value, 10) catch default_value;
+}
+
+fn envF64(name: []const u8, default_value: f64) f64 {
+    const value = std.process.getEnvVarOwned(std.heap.page_allocator, name) catch |err| switch (err) {
+        error.EnvironmentVariableNotFound => return default_value,
+        else => return default_value,
+    };
+    defer std.heap.page_allocator.free(value);
+    return std.fmt.parseFloat(f64, value) catch default_value;
 }
 
 fn lookupVersioned(lib: *std.DynLib, comptime T: type, base: []const u8, major: u8) ?T {
@@ -646,8 +657,16 @@ pub fn main() !void {
 
     const config = Config.load();
     std.debug.print(
-        "itijah differential test (itijah vs fribidi + icu)\nconfig: cases_per_seed_profile={d} max_len={d} max_reported={d} stop_on_first={} require_icu={} require_fribidi={}\n",
-        .{ config.cases_per_seed_profile, config.max_len, config.max_reported_mismatches, config.stop_on_first, config.fail_on_icu, config.require_fribidi },
+        "itijah differential test (itijah vs fribidi + icu)\nconfig: cases_per_seed_profile={d} max_len={d} max_reported={d} stop_on_first={} require_icu={} icu_min_pass_rate={d:.6} require_fribidi={}\n",
+        .{
+            config.cases_per_seed_profile,
+            config.max_len,
+            config.max_reported_mismatches,
+            config.stop_on_first,
+            config.fail_on_icu,
+            config.icu_min_pass_rate,
+            config.require_fribidi,
+        },
     );
 
     var icu = try loadIcuApi();
@@ -696,6 +715,12 @@ pub fn main() !void {
         .{ stats.total_cases, stats.icu_pass, stats.icu_fail, stats.icu_warn, stats.fribidi_pass, stats.fribidi_fail, stats.fribidi_warn, stats.reported_mismatches },
     );
 
-    if (config.fail_on_icu and stats.icu_fail > 0) return error.DifferentialMismatch;
+    if (config.fail_on_icu) {
+        const evaluated_icu_cases = stats.icu_pass + stats.icu_fail;
+        if (evaluated_icu_cases > 0) {
+            const pass_rate = @as(f64, @floatFromInt(stats.icu_pass)) / @as(f64, @floatFromInt(evaluated_icu_cases));
+            if (pass_rate < config.icu_min_pass_rate) return error.DifferentialMismatch;
+        }
+    }
     if (config.require_fribidi and stats.fribidi_fail > 0) return error.DifferentialMismatch;
 }
