@@ -61,108 +61,42 @@ These are cosmetic refinements that don't affect terminal integration — termin
 ```zig
 const itijah = @import("itijah");
 
-// Get embedding levels
+// One-shot: allocates per call, caller frees via deinit(allocator)
 var dir: itijah.ParDirection = .auto_ltr;
 var emb = try itijah.getParEmbeddingLevels(allocator, codepoints, &dir);
 defer emb.deinit(allocator);
 
-// Reorder to visual order
 var vis = try itijah.reorderLine(allocator, codepoints, emb.levels, dir.toLevel());
 defer vis.deinit(allocator);
-
-// Logical-to-visual index map
-const l2v = try itijah.logToVis(allocator, emb.levels, dir.toLevel());
-defer allocator.free(l2v);
-
-// Visual runs in visual order (contiguous logical slices + direction)
-const runs = try itijah.getVisualRuns(allocator, emb.levels, dir.toLevel());
-defer allocator.free(runs);
-
-// Terminal-oriented line layout: levels + runs + maps in one call
-var layout = try itijah.resolveVisualLayout(allocator, codepoints, .{
-    .base_dir = .ltr,
-});
-defer layout.deinit(allocator);
-
-// Remove bidi control marks
-const cleaned = try itijah.removeBidiMarks(allocator, codepoints, null);
-defer allocator.free(cleaned.result);
 ```
 
-Scratch/reuse APIs are available for high-throughput render loops:
+Scratch APIs reuse buffers across calls — zero allocations after warmup:
 
 ```zig
-var emb_scratch = itijah.EmbeddingScratch{};
-defer emb_scratch.deinit(allocator);
-var re_scratch = itijah.ReorderScratch{};
-defer re_scratch.deinit(allocator);
+// Create once, reuse across frames/lines
+var scratch = itijah.VisualLayoutScratch{};
+defer scratch.deinit(allocator);
 
-var dir: itijah.ParDirection = .auto_ltr;
-const emb = try itijah.getParEmbeddingLevelsScratchView(allocator, &emb_scratch, codepoints, &dir);
-// emb.levels is scratch-owned, valid until next emb_scratch mutation
-
-const visual = try itijah.reorderVisualOnlyScratch(
-    allocator,
-    &re_scratch,
-    codepoints,
-    emb.levels,
-    dir.toLevel(),
-);
-// visual is scratch-owned, valid until next re_scratch mutation
-
-var line_scratch = itijah.ReorderLineScratch{};
-defer line_scratch.deinit(allocator);
-const line_view = try itijah.reorderLineScratch(
-    allocator,
-    &line_scratch,
-    codepoints,
-    emb.levels,
-    dir.toLevel(),
-);
-_ = line_view; // scratch-owned slices valid until next line_scratch mutation
-
-var runs_scratch = itijah.VisualRunsScratch{};
-defer runs_scratch.deinit(allocator);
-const runs_view = try itijah.getVisualRunsScratch(
-    allocator,
-    &runs_scratch,
-    emb.levels,
-    dir.toLevel(),
-);
-_ = runs_view; // scratch-owned slice
-
-var map_scratch = itijah.LogToVisScratch{};
-defer map_scratch.deinit(allocator);
-const l2v_scratch = try itijah.logToVisScratch(
-    allocator,
-    &map_scratch,
-    emb.levels,
-    dir.toLevel(),
-);
-_ = l2v_scratch; // scratch-owned slice
-
-var layout_scratch = itijah.VisualLayoutScratch{};
-defer layout_scratch.deinit(allocator);
-const layout_view = try itijah.resolveVisualLayoutScratch(
-    allocator,
-    &layout_scratch,
-    codepoints,
-    .{ .base_dir = .ltr },
-);
-_ = layout_view; // scratch-owned slices
+// Per-line in render loop (zero allocs after warmup)
+const layout = try itijah.resolveVisualLayoutScratch(allocator, &scratch, codepoints, .{
+    .base_dir = .ltr,
+});
+// layout.levels, layout.runs, layout.l_to_v, layout.v_to_l — scratch-owned views
 ```
 
-For a detailed guide on choosing between owned and scratch APIs, memory ownership, and integration patterns, see [docs/usage.md](docs/usage.md).
+For the full API surface, ownership model, and integration guide, see [docs/usage.md](docs/usage.md).
 
 ## Terminal Integration
 
 Minimal row pipeline (left-anchored terminal row, line-scoped bidi):
 
 ```zig
-const layout = try itijah.resolveVisualLayout(allocator, row_codepoints, .{
-    .base_dir = .ltr, // terminal row base direction
+var bidi_scratch = itijah.VisualLayoutScratch{}; // create once, reuse across frames
+defer bidi_scratch.deinit(allocator);
+
+const layout = try itijah.resolveVisualLayoutScratch(allocator, &bidi_scratch, row_codepoints, .{
+    .base_dir = .ltr,
 });
-defer layout.deinit(allocator);
 
 for (layout.runs) |run| {
     // Feed shaper in logical order for this run's contiguous logical slice.
