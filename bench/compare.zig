@@ -514,7 +514,7 @@ fn loadIcuApi() !IcuApi {
 fn runItijah(allocator: Allocator, op: Op, cps: []const u21) !void {
     var dir: itijah.ParDirection = .auto_ltr;
     var emb = try itijah.getParEmbeddingLevels(allocator, cps, &dir);
-    defer emb.deinit();
+    defer emb.deinit(allocator);
 
     switch (op) {
         .analysis => {},
@@ -684,7 +684,7 @@ fn fribidiParityCase(allocator: Allocator, case: Case) !?Mismatch {
     const fri = try computeFribidi(case.cps);
 
     var layout = try itijah.resolveVisualLayout(allocator, case.cps, .{ .base_dir = .auto_ltr });
-    defer layout.deinit();
+    defer layout.deinit(allocator);
 
     if (layout.levels.len != fri.len) return .{
         .kind = .levels,
@@ -791,7 +791,7 @@ fn printLevelMismatchContext(
 
     var dir: itijah.ParDirection = .auto_ltr;
     var emb = try itijah.getParEmbeddingLevels(allocator, case.cps, &dir);
-    defer emb.deinit();
+    defer emb.deinit(allocator);
 
     const start = mismatch_idx -| 8;
     const end = @min(mismatch_idx + 9, case.cps.len);

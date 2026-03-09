@@ -184,15 +184,15 @@ fn runOperation(allocator: Allocator, op: Op, corpus: []const u21) !void {
         .embed => {
             var dir: itijah.ParDirection = .auto_ltr;
             var emb = try itijah.getParEmbeddingLevels(allocator, corpus, &dir);
-            emb.deinit();
+            emb.deinit(allocator);
         },
         .full => {
             var dir: itijah.ParDirection = .auto_ltr;
             var emb = try itijah.getParEmbeddingLevels(allocator, corpus, &dir);
-            defer emb.deinit();
+            defer emb.deinit(allocator);
 
             var vis = try itijah.reorderLine(allocator, corpus, emb.levels, dir.toLevel());
-            vis.deinit();
+            vis.deinit(allocator);
         },
     }
 }
