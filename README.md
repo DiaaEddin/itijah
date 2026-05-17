@@ -70,6 +70,14 @@ var vis = try itijah.reorderLine(allocator, codepoints, emb.levels, dir.toLevel(
 defer vis.deinit(allocator);
 ```
 
+Fast preflight for terminal/editor rows:
+
+```zig
+if (!itijah.hasStrongRtl(row_codepoints)) {
+    // Host renderer can keep its normal LTR path.
+}
+```
+
 Scratch APIs reuse buffers across calls — zero allocations after warmup:
 
 ```zig
