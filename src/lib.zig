@@ -82,6 +82,15 @@ pub fn getParEmbeddingLevelsScratchView(
     return embedding.getParEmbeddingLevelsScratchView(allocator, scratch, codepoints, par_dir);
 }
 
+/// Return true if `codepoints` contains a strong RTL bidi class (`R` or `AL`).
+///
+/// This is a cheap preflight helper for callers that want to skip full bidi
+/// processing on rows with no RTL text. It does not classify explicit controls,
+/// isolates, or Arabic numbers as strong RTL.
+pub fn hasStrongRtl(codepoints: []const u21) bool {
+    return embedding.hasStrongRtl(codepoints);
+}
+
 /// Reorder a line of codepoints from logical to visual order.
 /// Implements Rules L1.4, L2. Returns visual string and index maps.
 ///

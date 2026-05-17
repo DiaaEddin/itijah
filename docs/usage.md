@@ -79,6 +79,10 @@ const view = try itijah.getParEmbeddingLevelsScratchView(allocator, &scratch, co
 // valid until the next call that mutates scratch
 ```
 
+Scratch view slices are exposed as `[]const` because callers should treat them
+as immutable borrowed results. Mutating the scratch object by calling another
+scratch API can invalidate all slices from the previous view.
+
 ### Plain slices
 
 `logToVis` and `getVisualRuns` return caller-owned slices (not wrapped in a result struct). Free with `allocator.free(slice)`. Their scratch variants return views into scratch-owned memory.
@@ -127,3 +131,49 @@ fn renderLine(scratch: *itijah.VisualLayoutScratch, allocator: Allocator, codepo
 ```
 
 This gives you zero allocations per line after the first few lines warm up the scratch buffers.
+
+### Fast RTL preflight
+
+If a terminal row or editor line has no strong RTL text, consumers can often
+skip building a full bidi input for that row:
+
+```zig
+if (!itijah.hasStrongRtl(row_codepoints)) {
+    // Fast path for purely left-to-right rows in the host renderer.
+    return;
+}
+```
+
+`hasStrongRtl` scans codepoints for strong `R` or `AL` bidi classes. It does not
+replace full bidi analysis for rows containing explicit controls, isolates, or
+other bidi-sensitive content; use it as a coarse preflight.
+
+### Cursor mapping for terminals
+
+For terminal cursor and selection math, `logToVis` is the direct primitive:
+given a logical cell index, it returns the visual x position on the row.
+
+```zig
+var dir: itijah.ParDirection = .auto_ltr;
+var emb = try itijah.getParEmbeddingLevels(allocator, row_codepoints, &dir);
+defer emb.deinit(allocator);
+
+const l_to_v = try itijah.logToVis(allocator, emb.levels, dir.toLevel());
+defer allocator.free(l_to_v);
+
+const visual_x = l_to_v[logical_x];
+```
+
+In render loops, use `logToVisScratch` or `resolveVisualLayoutScratch`:
+
+```zig
+var scratch = itijah.VisualLayoutScratch{};
+defer scratch.deinit(allocator);
+
+const layout = try itijah.resolveVisualLayoutScratch(allocator, &scratch, row_codepoints, .{
+    .base_dir = .auto_ltr,
+});
+
+const visual_x = layout.l_to_v[logical_x];
+const logical_x = layout.v_to_l[visual_x];
+```

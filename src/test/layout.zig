@@ -97,6 +97,18 @@ test "visual layout empty input" {
     try runLayoutCase(&[_]u21{}, .{});
 }
 
+test "visual layout empty auto_rtl uses resolved RTL base level" {
+    const gpa = testing.allocator;
+    var owned = try itijah.resolveVisualLayout(gpa, &[_]u21{}, .{ .base_dir = .auto_rtl });
+    defer owned.deinit(gpa);
+    try testing.expectEqual(@as(itijah.BidiLevel, 1), owned.base_level);
+
+    var scratch = itijah.VisualLayoutScratch{};
+    defer scratch.deinit(gpa);
+    const view = try itijah.resolveVisualLayoutScratch(gpa, &scratch, &[_]u21{}, .{ .base_dir = .auto_rtl });
+    try testing.expectEqual(@as(itijah.BidiLevel, 1), view.base_level);
+}
+
 test "visual layout respects base_dir option" {
     const cps = [_]u21{ 0x05D0, 0x05D1, ' ', 'A', 'B' };
     try runLayoutCase(&cps, .{ .base_dir = .ltr });

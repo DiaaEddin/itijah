@@ -55,6 +55,9 @@ const IsolatingSeqNode = struct {
 const BracketPair = struct {
     open_run_idx: u32,
     close_run_idx: u32,
+    seq_idx: u32,
+    open_seq_pos: u32,
+    close_seq_pos: u32,
 };
 
 const BracketInfo = struct {
@@ -135,6 +138,45 @@ fn isRtlOrNonLtrStrong(class: BidiClass) bool {
     };
 }
 
+pub fn hasStrongRtl(codepoints: []const u21) bool {
+    for (codepoints) |cp| {
+        if (unicode.isRtlStrong(unicode.bidiClass(cp))) return true;
+    }
+    return false;
+}
+
+fn canUseLtrAllZeroPreScan(par_dir: ParDirection, codepoints: []const u21) bool {
+    if (par_dir == .rtl) return false;
+
+    var has_ltr_strong = false;
+    for (codepoints) |cp| {
+        const class = unicode.bidiClass(cp);
+        switch (class) {
+            .left_to_right => has_ltr_strong = true,
+            .right_to_left,
+            .right_to_left_arabic,
+            .arabic_number,
+            .left_to_right_embedding,
+            .right_to_left_embedding,
+            .left_to_right_override,
+            .right_to_left_override,
+            .pop_directional_format,
+            .left_to_right_isolate,
+            .right_to_left_isolate,
+            .first_strong_isolate,
+            .pop_directional_isolate,
+            => return false,
+            else => {},
+        }
+    }
+
+    return switch (par_dir) {
+        .ltr, .auto_ltr => true,
+        .auto_rtl => has_ltr_strong,
+        .rtl => unreachable,
+    };
+}
+
 fn canUseSimpleLtrFastPath(par_dir: ParDirection, classes: []const BidiClass) bool {
     if (par_dir != .ltr and par_dir != .auto_ltr) return false;
 
@@ -183,9 +225,20 @@ pub fn getParEmbeddingLevels(
     const len: u32 = @intCast(codepoints.len);
     if (len == 0) {
         const levels = try allocator.alloc(BidiLevel, 0);
+        const resolved_dir = resolveEmptyParDirection(par_dir);
         return .{
             .levels = levels,
-            .resolved_par_dir = if (par_dir.isAuto()) .ltr else par_dir.*,
+            .resolved_par_dir = resolved_dir,
+        };
+    }
+
+    if (canUseLtrAllZeroPreScan(par_dir.*, codepoints)) {
+        const levels = try allocator.alloc(BidiLevel, len);
+        @memset(levels, level_mod.ltr_level);
+        par_dir.* = .ltr;
+        return .{
+            .levels = levels,
+            .resolved_par_dir = .ltr,
         };
     }
 
@@ -316,9 +369,21 @@ pub fn getParEmbeddingLevelsScratchView(
     const len_u32: u32 = @intCast(len);
     if (len == 0) {
         scratch.levels.items.len = 0;
+        const resolved_dir = resolveEmptyParDirection(par_dir);
         return .{
             .levels = scratch.levels.items,
-            .resolved_par_dir = if (par_dir.isAuto()) .ltr else par_dir.*,
+            .resolved_par_dir = resolved_dir,
+        };
+    }
+
+    if (canUseLtrAllZeroPreScan(par_dir.*, codepoints)) {
+        try scratch.levels.ensureTotalCapacity(allocator, len);
+        scratch.levels.items.len = len;
+        @memset(scratch.levels.items, level_mod.ltr_level);
+        par_dir.* = .ltr;
+        return .{
+            .levels = scratch.levels.items,
+            .resolved_par_dir = .ltr,
         };
     }
 
@@ -1108,6 +1173,16 @@ fn isStrongForN0(class: BidiClass) bool {
     return class == .left_to_right or class == .right_to_left;
 }
 
+fn resolveEmptyParDirection(par_dir: *ParDirection) ParDirection {
+    const resolved: ParDirection = switch (par_dir.*) {
+        .auto_ltr => .ltr,
+        .auto_rtl => .rtl,
+        else => par_dir.*,
+    };
+    par_dir.* = resolved;
+    return resolved;
+}
+
 fn implicitLevelForStrong(level: BidiLevel, strong_class: BidiClass) BidiLevel {
     const strong_is_rtl = strong_class == .right_to_left;
     return level + @as(BidiLevel, @intFromBool(level_mod.isRtl(level) != strong_is_rtl));
@@ -1521,6 +1596,7 @@ fn isNi(class: BidiClass) bool {
 
 const OpenEntry = struct {
     run_idx: u32,
+    seq_pos: u32,
     paired_close: u21,
 };
 
@@ -1542,14 +1618,14 @@ fn collectBracketPairsPerSequenceInto(
     }
     try pairs.ensureTotalCapacity(allocator, bracket_candidate_count / 2);
 
-    for (sequences) |seq| {
+    for (sequences, 0..) |seq, seq_idx| {
         const seq_pairs_start = pairs.items.len;
         var overflowed = false;
         var stack: [63]OpenEntry = undefined;
         var stack_size: u8 = 0;
 
         // UAX #9 BD16: bracket pairing is evaluated per IRS using a stack.
-        for (seq.run_indices) |run_idx| {
+        for (seq.run_indices, 0..) |run_idx, seq_pos| {
             const run_idx_usize = runIndexToUsize(run_idx);
             const run = runs[run_idx_usize];
             if (unicode.isRemovedByX9(run.class)) continue;
@@ -1563,6 +1639,7 @@ fn collectBracketPairsPerSequenceInto(
 
                     stack[stack_size] = .{
                         .run_idx = @intCast(run_idx),
+                        .seq_pos = @intCast(seq_pos),
                         .paired_close = run.bracket_cp,
                     };
                     stack_size += 1;
@@ -1576,6 +1653,9 @@ fn collectBracketPairsPerSequenceInto(
                             try pairs.append(allocator, .{
                                 .open_run_idx = @intCast(entry.run_idx),
                                 .close_run_idx = run_idx,
+                                .seq_idx = @intCast(seq_idx),
+                                .open_seq_pos = entry.seq_pos,
+                                .close_seq_pos = @intCast(seq_pos),
                             });
                             stack_size = stack_idx;
                             break;
@@ -1608,18 +1688,22 @@ fn collectBracketPairsPerSequence(
     return try pairs.toOwnedSlice(allocator);
 }
 
-fn applyBracketPairsN0(runs: []Run, pairs: []const BracketPair) void {
+fn applyBracketPairsN0(runs: []Run, sequences: []const IsolatingRunSequence, pairs: []const BracketPair) void {
     for (pairs) |pair| {
         const open_run_idx = runIndexToUsize(pair.open_run_idx);
         const close_run_idx = runIndexToUsize(pair.close_run_idx);
+        const seq = sequences[@intCast(pair.seq_idx)];
+        const open_seq_pos: usize = @intCast(pair.open_seq_pos);
+        const close_seq_pos: usize = @intCast(pair.close_seq_pos);
         const embedding_level = runs[open_run_idx].level;
         const pair_iso_level = runs[open_run_idx].isolate_level;
 
         var class_to_set: ?BidiClass = null;
 
         // N0b: strong type inside pair matching the embedding level.
-        var run_idx = open_run_idx;
-        while (run_idx < close_run_idx) : (run_idx += 1) {
+        var seq_pos = open_seq_pos + 1;
+        while (seq_pos < close_seq_pos) : (seq_pos += 1) {
+            const run_idx = runIndexToUsize(seq.run_indices[seq_pos]);
             const strong_t = typeAnEnAsRtl(runs[run_idx].class);
             if (!isStrongForN0(strong_t)) continue;
 
@@ -1634,9 +1718,10 @@ fn applyBracketPairsN0(runs: []Run, pairs: []const BracketPair) void {
         if (class_to_set == null) {
             var prec_strong_level = embedding_level;
 
-            var back_run_idx = open_run_idx;
-            while (back_run_idx > 0) {
-                back_run_idx -= 1;
+            var back_seq_pos = open_seq_pos;
+            while (back_seq_pos > 0) {
+                back_seq_pos -= 1;
+                const back_run_idx = runIndexToUsize(seq.run_indices[back_seq_pos]);
                 const strong_t = typeAnEnAsRtl(runs[back_run_idx].class);
                 if (!isStrongForN0(strong_t)) continue;
 
@@ -1644,8 +1729,9 @@ fn applyBracketPairsN0(runs: []Run, pairs: []const BracketPair) void {
                 break;
             }
 
-            run_idx = open_run_idx;
-            while (run_idx < close_run_idx) : (run_idx += 1) {
+            seq_pos = open_seq_pos + 1;
+            while (seq_pos < close_seq_pos) : (seq_pos += 1) {
+                const run_idx = runIndexToUsize(seq.run_indices[seq_pos]);
                 const strong_t = typeAnEnAsRtl(runs[run_idx].class);
                 if (!isStrongForN0(strong_t)) continue;
 
@@ -1658,7 +1744,7 @@ fn applyBracketPairsN0(runs: []Run, pairs: []const BracketPair) void {
             runs[open_run_idx].class = new_class;
             runs[close_run_idx].class = new_class;
 
-            run_idx = open_run_idx + 1;
+            var run_idx = open_run_idx + 1;
             while (run_idx < runs.len) : (run_idx += 1) {
                 if (runs[run_idx].isolate_level != pair_iso_level) break;
                 if (runs[run_idx].class == .boundary_neutral) continue;
@@ -1764,7 +1850,7 @@ fn resolveBracketsAndNeutrals(
     if (has_bracket_candidates) {
         const pairs = try collectBracketPairsPerSequence(allocator, codepoints, runs, sequences);
         defer allocator.free(pairs);
-        applyBracketPairsN0(runs, pairs);
+        applyBracketPairsN0(runs, sequences, pairs);
     }
 
     resolveNeutralsN1N2(runs, sequences);
@@ -1795,7 +1881,7 @@ fn resolveBracketsAndNeutralsScratch(
             runs,
             sequences,
         );
-        applyBracketPairsN0(runs, scratch.bracket_pairs.items);
+        applyBracketPairsN0(runs, sequences, scratch.bracket_pairs.items);
     }
 
     resolveNeutralsN1N2(runs, sequences);
@@ -2062,6 +2148,65 @@ test "spec target: N0 does not pair across disjoint IRS at same isolate level" {
     try testing.expectEqual(@as(usize, 0), cross_irs_pairs);
 }
 
+test "spec target: N0 ignores strong text from nested isolate inside bracket span" {
+    const testing = std.testing;
+    const gpa = testing.allocator;
+
+    // The outer IRS contains the bracket pair around a nested isolate:
+    //   LRI Hebrew "(" RLI "A" PDI ")" PDI
+    // The nested "A" is globally between "(" and ")", but it is not in the
+    // outer IRS and must not trigger N0c for the outer bracket pair.
+    const cps = [_]u21{
+        0x2066, // LRI
+        0x05D0, // Hebrew letter, preceding strong in the outer IRS
+        '(',
+        0x2067, // RLI
+        'A',
+        0x2069, // PDI for nested RLI
+        ')',
+        0x2069, // PDI for outer LRI
+    };
+
+    const classes = try gpa.alloc(BidiClass, cps.len);
+    defer gpa.free(classes);
+    for (cps, 0..) |cp, i| classes[i] = unicode.bidiClass(cp);
+
+    var runs = ArrayList(Run){};
+    defer runs.deinit(gpa);
+    try buildRuns(gpa, &runs, classes, &cps, @intCast(cps.len));
+    try resolveExplicit(&runs, 0);
+    for (runs.items) |*run| run.orig_class = run.class;
+
+    const level_runs = try computeLevelRuns(gpa, runs.items);
+    defer gpa.free(level_runs);
+    const sequences_data = try computeIsolatingRunSequences(gpa, runs.items, level_runs, 0);
+    defer deinitIsolatingRunSequences(gpa, sequences_data);
+    try resolveWeak(gpa, runs.items, sequences_data.sequences);
+
+    const pairs = try collectBracketPairsPerSequence(gpa, &cps, runs.items, sequences_data.sequences);
+    defer gpa.free(pairs);
+    try testing.expectEqual(@as(usize, 1), pairs.len);
+
+    const open_idx = runIndexToUsize(pairs[0].open_run_idx);
+    const close_idx = runIndexToUsize(pairs[0].close_run_idx);
+    try testing.expectEqual(@as(u32, 2), runs.items[open_idx].pos);
+    try testing.expectEqual(@as(u32, 6), runs.items[close_idx].pos);
+
+    var nested_strong_is_in_pair_irs = false;
+    const seq = sequences_data.sequences[runIndexToUsize(pairs[0].seq_idx)];
+    for (seq.run_indices) |run_idx| {
+        if (runs.items[runIndexToUsize(run_idx)].pos == 4) {
+            nested_strong_is_in_pair_irs = true;
+        }
+    }
+    try testing.expect(!nested_strong_is_in_pair_irs);
+
+    applyBracketPairsN0(runs.items, sequences_data.sequences, pairs);
+
+    try testing.expectEqual(BidiClass.other_neutrals, runs.items[open_idx].class);
+    try testing.expectEqual(BidiClass.other_neutrals, runs.items[close_idx].class);
+}
+
 test "P2-P3: paragraph direction detection" {
     const testing = std.testing;
     const gpa = testing.allocator;
@@ -2090,7 +2235,77 @@ test "P2-P3: paragraph direction detection" {
         var result = try getParEmbeddingLevels(gpa, &[_]u21{}, &dir);
         defer result.deinit(gpa);
         try testing.expectEqual(@as(usize, 0), result.levels.len);
+        try testing.expectEqual(ParDirection.ltr, result.resolved_par_dir);
+        try testing.expectEqual(ParDirection.ltr, dir);
     }
+
+    // Empty input keeps auto_rtl fallback consistent with non-empty no-strong input.
+    {
+        var dir: ParDirection = .auto_rtl;
+        var result = try getParEmbeddingLevels(gpa, &[_]u21{}, &dir);
+        defer result.deinit(gpa);
+        try testing.expectEqual(@as(usize, 0), result.levels.len);
+        try testing.expectEqual(ParDirection.rtl, result.resolved_par_dir);
+        try testing.expectEqual(ParDirection.rtl, dir);
+    }
+
+    // Scratch view follows the same empty-input writeback contract.
+    {
+        var scratch = EmbeddingScratch{};
+        defer scratch.deinit(gpa);
+
+        var dir: ParDirection = .auto_rtl;
+        const view = try getParEmbeddingLevelsScratchView(gpa, &scratch, &[_]u21{}, &dir);
+        try testing.expectEqual(@as(usize, 0), view.levels.len);
+        try testing.expectEqual(ParDirection.rtl, view.resolved_par_dir);
+        try testing.expectEqual(ParDirection.rtl, dir);
+    }
+}
+
+test "fast path: allocation-free pre-scan preserves auto_rtl fallback semantics" {
+    const testing = std.testing;
+    const gpa = testing.allocator;
+
+    {
+        var dir: ParDirection = .auto_rtl;
+        const input = [_]u21{ 'A', ' ', '1', ')' };
+        var result = try getParEmbeddingLevels(gpa, &input, &dir);
+        defer result.deinit(gpa);
+
+        try testing.expectEqual(ParDirection.ltr, result.resolved_par_dir);
+        try testing.expectEqual(ParDirection.ltr, dir);
+        for (result.levels) |level| try testing.expectEqual(@as(BidiLevel, 0), level);
+    }
+
+    {
+        var dir: ParDirection = .auto_rtl;
+        const input = [_]u21{ ' ', '1', ')' };
+        var result = try getParEmbeddingLevels(gpa, &input, &dir);
+        defer result.deinit(gpa);
+
+        try testing.expectEqual(ParDirection.rtl, result.resolved_par_dir);
+        try testing.expectEqual(ParDirection.rtl, dir);
+        try testing.expectEqual(@as(BidiLevel, 1), result.levels[0]);
+        try testing.expectEqual(@as(BidiLevel, 2), result.levels[1]);
+    }
+
+    {
+        var dir: ParDirection = .auto_ltr;
+        const input = [_]u21{ 0x2066, ')', 0x2069 };
+        var result = try getParEmbeddingLevels(gpa, &input, &dir);
+        defer result.deinit(gpa);
+
+        try testing.expectEqual(@as(BidiLevel, 2), result.levels[1]);
+    }
+}
+
+test "public helper: hasStrongRtl detects R and AL only" {
+    const testing = std.testing;
+
+    try testing.expect(!hasStrongRtl(&[_]u21{ 'A', ' ', '1', ')' }));
+    try testing.expect(hasStrongRtl(&[_]u21{ 'A', 0x05D0 }));
+    try testing.expect(hasStrongRtl(&[_]u21{ 'A', 0x0627 }));
+    try testing.expect(!hasStrongRtl(&[_]u21{ 0x0661, 0x0662 }));
 }
 
 test "explicit levels: LRE/RLE" {
